@@ -40,7 +40,10 @@ const JUDGE_MODELS = (process.env.JUDGE_MODELS || process.env.JUDGE_MODEL || MOD
 const RUNS = Number(process.env.RUNS || 1);
 const THINKING = Number(process.env.THINKING || 0);
 const CONCURRENCY = Number(process.env.CONCURRENCY || 4);
-const ALL_VARIANTS = ["baseline", "caveman", "ponytail", "honey", "honey-design", "honey-lean"];
+// TASKS_DIR=tasks-ext runs the external suite (Exercism, picked by rule — see tasks-ext/README.md).
+const TASKS_DIR = process.env.TASKS_DIR || "tasks";
+const JUDGE_NULL_MAX = Number(process.env.JUDGE_NULL_MAX ?? 0.05); // max share of empty judge seats
+const ALL_VARIANTS = ["baseline", "caveman", "ponytail", "honey", "honey-design", "honey-lean", "honey-noclose"];
 // Both are opt-in, excluded from the default sweep — request with --variants.
 //   honey-design: user-facing satellite, only meaningful on web tasks.
 //   honey-lean:   candidate replacement for the core skill, not a satellite — 781 tokens
@@ -49,7 +52,9 @@ const ALL_VARIANTS = ["baseline", "caveman", "ponytail", "honey", "honey-design"
 //     prompts at +10–15% eval with 41–66% fewer tokens; Anthropic says prior-model
 //     prompts "reduce output quality" on Fable 5). If it wins, honey becomes lean —
 //     this does not ship as a second skill. See ../METHODOLOGY.md § Lean-prompt ablation.
-const OPT_IN = new Set(["honey-design", "honey-lean"]);
+//   honey-noclose: the shipped skill minus the one closing-line rule ("name what you
+//     skipped or didn't verify"). See ../METHODOLOGY.md § Closing-line ablation.
+const OPT_IN = new Set(["honey-design", "honey-lean", "honey-noclose"]);
 const DEFAULT_VARIANTS = ALL_VARIANTS.filter((v) => !OPT_IN.has(v));
 const VARIANTS = (flag("variants") || DEFAULT_VARIANTS.join(",")).split(",").map((s) => s.trim());
 const TASK_FILTER = flag("tasks") ? new Set(flag("tasks").split(",").map((s) => s.trim())) : null;
@@ -71,7 +76,7 @@ function loadVariant(name) {
 
 // --- tasks ---------------------------------------------------------------------
 function loadTasks() {
-  const dir = path.join(ROOT, "tasks");
+  const dir = path.join(ROOT, TASKS_DIR);
   return fs
     .readdirSync(dir)
     .filter((d) => fs.existsSync(path.join(dir, d, "meta.json")))
@@ -268,8 +273,25 @@ const cellKey = (v, t, r) => `${v}__${t}__r${r}`;
     ])
   );
 
-  const stamp = (process.env.STAMP || "latest").replace(/[^\w.-]/g, "_");
+  // Mock gets its own default so a pipeline check never overwrites a live local stamp.
+  const stamp = (process.env.STAMP || (MOCK ? "mock-latest" : "latest")).replace(/[^\w.-]/g, "_");
   const outDir = path.join(ROOT, "results", stamp);
+  // A live stamp is paid for: never overwrite one without --resume, and never let two runs
+  // write one at once (two sessions sharing STAMP=full-opus55 interleaved raw/ and records).
+  if (!MOCK && !RESUME && fs.existsSync(path.join(outDir, "results.json")))
+    throw new Error(`results/${stamp} already holds a run — use --resume to continue it, or a fresh STAMP`);
+  fs.mkdirSync(outDir, { recursive: true });
+  const lock = path.join(outDir, ".lock");
+  try {
+    fs.writeFileSync(lock, String(process.pid), { flag: "wx" });
+  } catch {
+    const pid = Number(fs.readFileSync(lock, "utf8"));
+    let alive = false;
+    try { process.kill(pid, 0); alive = true; } catch {}
+    if (alive) throw new Error(`results/${stamp} is being written by pid ${pid} — use a fresh STAMP`);
+    fs.writeFileSync(lock, String(process.pid)); // stale lock from a dead run
+  }
+  process.on("exit", () => { try { fs.unlinkSync(lock); } catch {} });
   fs.mkdirSync(path.join(outDir, "raw"), { recursive: true });
   fs.mkdirSync(path.join(outDir, "systems"), { recursive: true });
   for (const [v, s] of Object.entries(systems)) if (s) fs.writeFileSync(path.join(outDir, "systems", `${v}.md`), s);
@@ -306,6 +328,7 @@ const cellKey = (v, t, r) => `${v}__${t}__r${r}`;
     thinking: THINKING,
     mock: MOCK,
     variant_hashes: variantHashes,
+    tasks_dir: TASKS_DIR,
   };
   const persist = () => fs.writeFileSync(outFile, JSON.stringify({ meta, records }, null, 2));
 
@@ -374,6 +397,16 @@ const cellKey = (v, t, r) => `${v}__${t}__r${r}`;
 
   console.log("\n" + ptbl + "\n\n" + tbl + "\n");
   console.log(`results -> ${path.relative(REPO, outDir)}/`);
+
+  // A judge that silently returns no score blanks the quality column (judge.js once had a
+  // 200-token budget that thinking models spent before the JSON). Results are kept; the exit
+  // code says they need a re-judge (src/rejudge-stamp.js) before the judge column is quoted.
+  const seats = records.flatMap((r) => Object.values(r.judges || {}));
+  const nulls = seats.filter((s) => s == null).length;
+  if (seats.length && nulls / seats.length > JUDGE_NULL_MAX) {
+    console.error(`judge: ${nulls}/${seats.length} seats returned no score (> ${JUDGE_NULL_MAX * 100}%)`);
+    process.exitCode = 1;
+  }
 })().catch((e) => {
   console.error("\n" + e.stack || e);
   process.exit(1);
