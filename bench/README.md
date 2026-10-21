@@ -6,7 +6,7 @@ A **reproducible** benchmark comparing skill configurations on real coding tasks
 |---------|---------------|
 | `baseline` | none (control) |
 | `caveman` | [Caveman](https://github.com/JuliusBrussee/caveman) `SKILL.md` (pinned in [`variants/caveman.md`](variants/caveman.md)) |
-| `ponytail` | [Ponytail](https://github.com/DietrichGebert/ponytail) `AGENTS.md` (pinned in [`variants/ponytail.md`](variants/ponytail.md)) |
+| `ponytail` | [Ponytail](https://github.com/DietrichGebert/ponytail) `skills/ponytail/SKILL.md` (pinned in [`variants/ponytail.md`](variants/ponytail.md)) |
 | `honey` | this repo's [`skills/honey/SKILL.md`](../skills/honey/SKILL.md) (loaded live, no copy to drift) |
 | `honey-design` | the web-only satellite [`skills/honey-design/SKILL.md`](../skills/honey-design/SKILL.md) — opt-in, only meaningful on `web` tasks |
 
@@ -102,7 +102,8 @@ Knobs (env):
 | `RUNS` | `1` | repeats per task (use 3+ to average sampling noise) |
 | `THINKING` | `0` | extended-thinking token budget (0 = off) |
 | `CONCURRENCY` | `4` | parallel API calls |
-| `STAMP` | `latest` | results subdirectory name |
+| `STAMP` | `latest` (`mock-latest` with `--mock`) | results subdirectory name. A live run refuses a stamp that already holds `results.json` unless `--resume`, and a `.lock` stops two runs writing one stamp |
+| `JUDGE_NULL_MAX` | `0.05` | exit 1 when more than this share of judge seats returned no score; results are kept, re-judge with `src/rejudge-stamp.js` |
 
 The full cross-provider run used: `JUDGE_MODELS=claude-opus-4-8,claude-sonnet-4-6,claude-haiku-4-5-20251001,gpt-5.5`,
 `JUDGE_RUBRIC=plain`, `RUNS=3`, once with `MODEL=claude-opus-4-8 STAMP=full-opus48` and once with
@@ -153,6 +154,23 @@ runs are expensive and get killed). Extra env: `PROVIDER` (default `anthropic`),
 Measured (Opus 4.8, 14 code tasks): `compact` holds Honey's output cut (≈−49% vs `off`) at
 **100% test-pass and flat judge**, while `full` inflates per-turn input (the whole skill re-sent
 each loop) — which is why `compact` is the shape to ship for agentic use.
+
+### Result on Opus 5.5 (`cline-opus55`)
+
+Cline 3.0.29, 14 code tasks × 3 runs × off / compact / full, 126 agent runs, Haiku 4.5
+judge. Every run passed its test.
+
+| Payload | Δ output | Δ LOC | Δ new-input | Δ cost | Δ turns | Judge W/L/T |
+|---------|---------:|------:|------------:|-------:|--------:|------------:|
+| compact | **−39%** (p=0.001) | **−53%** (p=0.001) | +6% | −1% (ns) | 0 (median 2) | 5/3/6 |
+| full | −35% (p=0.001) | −44% (p=0.001) | +47% | **+36%** (p=0.001) | 0 (median 2) | 6/2/6 |
+
+**In a real agent loop the output cut holds and there is no retry tax, but the bill does
+not fall.** A session's cost is mostly input (the harness prompt, tool definitions, context
+re-sent each turn), so cutting output 39% moves cost by −1%. Sending the whole `SKILL.md`
+as a per-turn rule adds 47% new input and makes each task 36% *more* expensive. That is
+why the compact rule is the recommended Cline payload, and why the single-call −31% cost
+figure is an upper bound, not a promise.
 
 ## Regression gate
 
@@ -281,32 +299,119 @@ Add a `code` task: drop a folder in `tasks/` with `prompt.md`, `meta.json`, a `t
 
 ## Results
 
-Full cross-provider run — `plain` rubric, 4-judge cross-family panel
-(opus + sonnet + haiku + gpt-5.5), 23 tasks, 3 runs, stamps `full-opus48` / `full-gpt55`.
-
-> ⚠ **Partially re-verified.** These stamps predate the 2026-07-30 skill revision
-> (repo-reuse ladder rung, root-cause rule, no-prose-abbreviation rule) and the refresh of
-> `variants/caveman.md` / `variants/ponytail.md` to current upstream.
->
-> A live **k=1 smoke** on the revised skill (`results/smoke-postchange`, 23 tasks,
-> baseline vs honey, single judge) reproduces the headline and passes the gate: Δ output
-> **−29%** (p=0.040), Δ LOC **−38%** (p=0.001), tests 100% vs baseline 96%, judge 5/2/14
-> (p=0.453 — tie). `node src/gate.js smoke-postchange full-opus48` → OK, no regression.
->
-> Per the [run ladder](METHODOLOGY.md#run-ladder), **k=1 is not quotable**. It establishes
-> "no regression", not a number. The honey columns below still describe the previous
-> `SKILL.md`, and the competitor columns still describe older upstream prompts. A `RUNS=3`
-> re-run is needed before either is quoted as current. `Δ LOC` is backfilled from the saved
-> replies and is valid for these stamps as-is.
-
 Every figure is a **paired per-task median** vs `baseline` with a two-sided Wilcoxon `p`;
 judge is an exact sign test over per-task wins/losses/ties. `(ns)` = misses p<0.05, i.e. a
 tie. Regenerate any of it offline, no API spend:
 
 ```bash
-node src/report.js --stamp full-opus48            # whole suite
-node src/report.js --stamp full-opus48 --by-type  # per tier
+node src/report.js --stamp full-opus55b            # whole suite
+node src/report.js --stamp full-opus55b --by-type  # per tier
 ```
+
+### Opus 5.5 (`full-opus55b`) — current upstream competitors
+
+23 tasks × 3 runs, 276 cells, zero refusals, zero truncation, `MAX_TOKENS=16000`. Judge
+panel `claude-opus-5-5,claude-sonnet-5-5,claude-haiku-4-5` (no OpenAI seat: no key), `plain`
+rubric; 2 of 756 judge seats null. Competitors pinned 2026-10-18: Ponytail v5.3.2
+(`26a0cd68504a`), Caveman v4.0.1 (`947106a852e1`); honey `845b11b11fe9`, which includes
+the closing-line rule (name what was skipped or not verified). Run on `cd763a3`, the
+first commit with judges that work on thinking-by-default models (see *Judge budget* below).
+
+| Variant | Δ output | Δ LOC | Δ new-input | Δ cost | Judge W/L/T | sign p | Tests |
+|---------|---------:|------:|------------:|-------:|------------:|-------:|------:|
+| caveman | −29% (p<0.001) | −27% (p<0.001) | −1% | −26% (p<0.001) | 3/8/10 | 0.227 | 100% |
+| ponytail | −28% (p=0.002) | −52% (p<0.001) | −1% | −26% (p=0.002) | 1/16/4 | **<0.001** | 100% |
+| honey | **−40%** (p<0.001) | **−52%** (p<0.001) | −1% | **−31%** (p<0.001) | 5/12/4 | 0.143 | 100% |
+
+By tier, Δ output · Δ LOC:
+
+| Tier | tasks | caveman | ponytail | honey |
+|------|------:|--------:|---------:|------:|
+| code | 14 | −31% · −30% | −18% · −34% | **−44% · −65%** |
+| user-facing | 7 | −27% · −23% (ns) | −68% · −71% | −16% · −35% |
+| agent-to-agent | 2 | +24% | +52% | −15% |
+
+Every arm passes 100% of tests on every tier and recovers 100% of relay queries, so on this
+model the differences are volume and judged quality, not correctness. Ponytail 5's −68% on
+user-facing pages comes with a 0/7 judge loss (p=0.016) — the "shorter substitute" shape
+the [lean-prompt ablation](METHODOLOGY.md#lean-prompt-ablation) predicted. Gate:
+`node src/gate.js full-opus55b full-opus5` passes for honey (tests +4 pt, judge +3.8,
+paired output reduction −3 pt against a 10-pt limit) and flags caveman (44% → 29%), a
+competitor arm whose prompt changed. That is not a Honey regression. The closing-line rule's
+own cost is ≈0 (output +0.3%, p=0.90): see the
+[closing-line ablation](METHODOLOGY.md#closing-line-ablation).
+
+**Judge budget.** The first Opus 5.5 attempt (discarded) judged with `max_tokens: 200`.
+Opus and Sonnet 5.5 think by default and the budget is shared, so 40–57% of their seats
+came back empty. `judge.js` now allows 4096 and parses the last `{"score": …}` object.
+Any stamp judged by a thinking-by-default model before `cd763a3` should be re-judged with
+`src/rejudge-stamp.js` before its judge column is quoted.
+
+### External tasks (`ext-opus55`) — tasks Honey didn't write
+
+21 Python exercises from Exercism ([`tasks-ext/`](tasks-ext/README.md)), picked by a fixed
+rule before any run. Opus 5.5, 3 runs, same 3-judge panel, 252 cells, zero refusals.
+
+| Variant | Δ output | Δ LOC | Δ cost | Judge W/L/T | sign p | Tests |
+|---------|---------:|------:|-------:|------------:|-------:|------:|
+| caveman | −3% (ns) | −2% (p=0.008) | −0% (ns) | 4/3/14 | 1.000 | 100% |
+| ponytail | +6% (ns) | −36% (p<0.001) | +7% (ns) | 2/10/9 | **0.039** | 100% |
+| honey | **−20%** (p<0.001) | **−36%** (p<0.001) | **−13%** (p=0.002) | 2/9/10 | 0.065 | 95% |
+
+The cut holds on outside tasks but is about half of what the author-written suite shows
+(−40% / −52% / −31%), and Honey is the one arm that loses test cells here (60/63 against
+baseline 62/63). Two are real misses: on `go-counting` Honey dropped the stub's `WHITE` /
+`BLACK` / `NONE` constants, which the hidden tests import (the ladder cut names it judged
+unused). On `kindergarten-garden` it wrote "Radish" for "Radishes", a slip baseline also
+made once. Read this table, not the author-written one, as the conservative estimate.
+
+**Fixed by a rule, then re-run (`ext-opus55-stub`).** `SKILL.md` now lists, under *Never
+cut*, every name a provided stub, interface or public API defines. Re-run with that prompt
+(`9dbd635b9fb7`), baseline vs honey: Honey passes **63/63** (baseline 61/63), with output
+−21%, LOC −37%, cost −10% (all p≤0.007), judge 3/6/12 (p=0.508). On the main suite
+(`full-opus55-stub`) the same prompt gives −42% / −53% / −36% at 69/69 tests, and
+`node src/gate.js full-opus55-stub full-opus55b` passes.
+
+### Sonnet 5.5 and Haiku 5.5 (`full-sonnet55`, `full-haiku55`)
+
+Baseline vs honey, 23 tasks × 3 runs, Haiku 4.5 judge (as for the Sonnet 5 / Haiku 4.5
+stamps), 138 cells each, zero refusals.
+
+| Model | Δ output | Δ LOC | Δ cost | Judge W/L/T | Tests base → honey |
+|-------|---------:|------:|-------:|------------:|-------------------:|
+| Sonnet 5.5 | **−37%** (p<0.001) | **−55%** (p<0.001) | **−24%** (p<0.001) | 5/11/5 (p=0.210) | 96% → 99% |
+| Haiku 5.5 | −3% (ns) | **−38%** (p=0.001) | +9% (ns) | 6/4/11 (p=0.754) | 100% → 100% |
+
+**On Haiku 5.5 Honey moves tokens into thinking.** On code tasks the visible reply halves
+(median 868 → 447 characters, LOC −55%) while billed output rises 593 → 666 tokens: Haiku
+5.5 thinks by default and reasons longer under the skill. So `hooks/eco-config.json` gets a
+`sonnet-5-5` savings entry and no `haiku-5-5` entry — a Haiku 5.5 session shows no savings
+line rather than one the bill doesn't back.
+
+### `honey-design` on Opus 5.5 (`web-opus55-design`)
+
+The 7 user-facing tasks, baseline / honey / honey-design in one run, 3-judge panel, 63
+cells. Every page passes the structural and a11y checks in every arm (21/21).
+
+| Variant | Δ output | Δ LOC | Δ cost | Judge W/L/T | sign p |
+|---------|---------:|------:|-------:|------------:|-------:|
+| honey | −37% (p=0.022) | −40% (p=0.022) | −36% (p=0.022) | 0/6/1 | **0.031** |
+| honey-design | −52% (p=0.022) | −74% (p=0.022) | −52% (p=0.022) | 0/7/0 | **0.016** |
+
+**`honey-design` no longer earns its place on Opus 5.5**: it cuts hardest and the judges
+rank it below no skill on every page (two drop to 85 and 88), and below core honey head to
+head (1/3/3). It stays opt-in and is not loaded automatically. Core honey's web deficit is
+small (1–3 judge points per task) but one-directional here, where `full-opus55b` had it
+level (3/3/1) with the same prompt. Two runs of 7 tasks don't settle it; treat
+user-facing quality on Opus 5.5 as an open question.
+
+### Earlier stamps
+
+Full cross-provider run — `plain` rubric, 4-judge cross-family panel
+(opus + sonnet + haiku + gpt-5.5), 23 tasks, 3 runs, stamps `full-opus48` / `full-gpt55`.
+These use the **July 2026** competitor copies and the pre-2026-07-30 skill; the current
+competitor figures are the Opus 5.5 table above. `Δ LOC` is backfilled from the saved
+replies and is valid for these stamps as-is.
 
 ### Opus 4.8 (`full-opus48`)
 
