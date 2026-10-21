@@ -17,7 +17,7 @@ function runHook(toolOutput, { mode = "full" } = {}) {
   const ccrDir = path.join(tmp, "ccr");
   fs.writeFileSync(path.join(tmp, ".honey-active"), mode);
   const stdout = execFileSync("node", [HOOK], {
-    input: JSON.stringify({ tool_name: "Bash", tool_response: { stdout: toolOutput } }),
+    input: JSON.stringify({ tool_name: "Bash", tool_response: { stdout: toolOutput, stderr: "warn", interrupted: false } }),
     env: { ...process.env, CLAUDE_CONFIG_DIR: tmp, HONEY_CCR_DIR: ccrDir },
     encoding: "utf8",
   });
@@ -33,8 +33,12 @@ test("big uniform JSON array is crushed, stashed, and retrievable", () => {
   const { stdout, ccrDir } = runHook(bigArrayJson);
   const out = JSON.parse(stdout).hookSpecificOutput;
   assert.strictEqual(out.hookEventName, "PostToolUse");
+  // Bash drops a bare-string replacement (anthropics/claude-code#68951): must be its output object
+  assert.strictEqual(typeof out.updatedToolOutput, "object");
+  assert.strictEqual(out.updatedToolOutput.interrupted, false);
+  assert.strictEqual(out.updatedToolOutput.stderr, "warn", "tool's own fields survive");
 
-  const [esonText, note] = out.updatedToolOutput.split("\n[honey: ");
+  const [esonText, note] = out.updatedToolOutput.stdout.split("\n[honey: ");
   const doc = decode(esonText);
   assert.ok(doc.rows.length < bigArray.length, "view is smaller than the original");
   assert.ok(doc.rows.some((r) => r.id === 37), "anomaly row survives the crush");
@@ -75,7 +79,7 @@ test("guard entry file stays parseable on old node (no ??/?./arrows/templates/ba
 test("repetitive non-JSON text falls back to line collapse", () => {
   const lines = Array.from({ length: 40 }, () => "retrying connection to db-01...").join("\n");
   const { stdout } = runHook(lines);
-  const out = JSON.parse(stdout).hookSpecificOutput.updatedToolOutput;
+  const out = JSON.parse(stdout).hookSpecificOutput.updatedToolOutput.stdout;
   assert.match(out, /⟨×40⟩/);
   assert.match(out, /eson retrieve [0-9a-f]{16}/);
 });
