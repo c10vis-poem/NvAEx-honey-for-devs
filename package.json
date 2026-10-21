@@ -1,6 +1,6 @@
 {
   "name": "honey-skill",
-  "version": "1.3.1",
+  "version": "1.4.0",
   "description": "Honey (I Shrunk the AI) — write less code and say less about it. A coding skill that cuts agent token cost across every major AI coding tool.",
   "license": "MIT",
   "repository": "github:Green-PT/honey-for-devs",
@@ -9,7 +9,8 @@
     "honey-install": "bin/install.js",
     "eso": "bin/eso.js",
     "eson": "bin/eso.js",
-    "honey-usage": "bin/usage.js"
+    "honey-usage": "bin/usage.js",
+    "honey-check": "bin/check.js"
   },
   "scripts": {
     "bench:eso": "node bench/eso/run.mjs",
