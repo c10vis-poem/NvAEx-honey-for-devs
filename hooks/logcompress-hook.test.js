@@ -7,6 +7,7 @@ const { execFileSync } = require("node:child_process");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { decode } = require("../eso");
 
 const HOOK = path.join(__dirname, "logcompress-hook.js");
 const ESO = path.join(__dirname, "..", "bin", "eso.js");
@@ -37,11 +38,11 @@ test("big uniform JSON array is crushed, stashed, and retrievable", () => {
   assert.strictEqual(out.updatedToolOutput.interrupted, false);
   assert.strictEqual(out.updatedToolOutput.stderr, "warn", "tool's own fields survive");
 
-  const [viewJson, note] = out.updatedToolOutput.stdout.split("\n[honey: ");
-  const view = JSON.parse(viewJson);
-  assert.ok(view.length < bigArray.length, "view is smaller than the original");
-  assert.ok(view.some((r) => r.id === 37), "anomaly row survives the crush");
-  assert.ok(view.some((r) => typeof r._ccr === "string"), "sentinel present");
+  const [esonText, note] = out.updatedToolOutput.stdout.split("\n[honey: ");
+  const doc = decode(esonText);
+  assert.ok(doc.rows.length < bigArray.length, "view is smaller than the original");
+  assert.ok(doc.rows.some((r) => r.id === 37), "anomaly row survives the crush");
+  assert.equal(doc.dropped, bigArray.length - doc.rows.length, "dropped count matches");
 
   const hash = note.match(/eson retrieve ([0-9a-f]{16})/)[1];
   const restored = execFileSync("node", [ESO, "retrieve", hash], {
